@@ -545,6 +545,528 @@ app.post('/run-job', async (req, res) => {
   }
 })
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// DATA API — all frontend data queries route through these endpoints
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Helper: get user profile (role + workspace_id)
+async function getUserProfile(userId) {
+  const { data } = await supabase
+    .from('user_profiles')
+    .select('role, workspace_id')
+    .eq('id', userId)
+    .single()
+  return data
+}
+
+// Helper: verify auth + workspace access. Returns { user, profile } or sends error.
+async function requireAuth(req, res) {
+  const user = await getAuthUser(req)
+  if (!user) { json(res, { error: 'Unauthorized' }, 401); return null }
+  const profile = await getUserProfile(user.id)
+  if (!profile) { json(res, { error: 'Profile not found' }, 403); return null }
+  return { user, profile }
+}
+
+function canAccessWorkspace(profile, wsId) {
+  return profile.role === 'super_admin' || profile.workspace_id === parseInt(wsId)
+}
+
+// ── GET /me — current user profile ───────────────────────────────────────────
+app.get('/me', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    return json(res, { role: auth.profile.role, workspace_id: auth.profile.workspace_id })
+  } catch (err) {
+    console.error('[me]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── GET /workspaces — list workspaces ────────────────────────────────────────
+app.get('/workspaces', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+
+    let query = supabase
+      .from('workspaces')
+      .select('*, workspace_ad_accounts(id, ad_account_id)')
+      .order('created_at', { ascending: false })
+
+    if (auth.profile.role !== 'super_admin') {
+      query = query.eq('id', auth.profile.workspace_id)
+    }
+
+    const { data, error } = await query
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[workspaces]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── GET /workspaces/:id — single workspace with ad accounts ──────────────────
+app.get('/workspaces/:id', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    if (!canAccessWorkspace(auth.profile, req.params.id))
+      return json(res, { error: 'Forbidden' }, 403)
+
+    const { data, error } = await supabase
+      .from('workspaces')
+      .select('*, workspace_ad_accounts(*)')
+      .eq('id', req.params.id)
+      .single()
+    if (error) throw error
+    // Strip access_token from ad accounts before returning
+    if (data?.workspace_ad_accounts) {
+      data.workspace_ad_accounts = data.workspace_ad_accounts.map(({ access_token, ...rest }) => rest)
+    }
+    // Include assigned user email (from accepted invitation)
+    if (data?.user_id) {
+      const { data: invite } = await supabase
+        .from('invitations')
+        .select('email')
+        .eq('workspace_id', req.params.id)
+        .not('accepted_at', 'is', null)
+        .order('accepted_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      data.assigned_user_email = invite?.email || null
+    }
+    return json(res, data)
+  } catch (err) {
+    console.error('[workspaces/:id]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── POST /workspaces — create workspace ──────────────────────────────────────
+app.post('/workspaces', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    if (auth.profile.role !== 'super_admin') return json(res, { error: 'Forbidden' }, 403)
+
+    const { data, error } = await supabase
+      .from('workspaces')
+      .insert(req.body)
+      .select()
+      .single()
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[create-workspace]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── PATCH /workspaces/:id — update workspace ─────────────────────────────────
+app.patch('/workspaces/:id', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    if (auth.profile.role !== 'super_admin') return json(res, { error: 'Forbidden' }, 403)
+
+    const { data, error } = await supabase
+      .from('workspaces')
+      .update(req.body)
+      .eq('id', req.params.id)
+      .select()
+      .single()
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[update-workspace]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── GET /workspaces/:id/ad-accounts ──────────────────────────────────────────
+app.get('/workspaces/:id/ad-accounts', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    if (!canAccessWorkspace(auth.profile, req.params.id))
+      return json(res, { error: 'Forbidden' }, 403)
+
+    const { data, error } = await supabase
+      .from('workspace_ad_accounts')
+      .select('id, workspace_id, ad_account_id, account_name, is_active, linked_at')
+      .eq('workspace_id', req.params.id)
+      .order('linked_at', { ascending: false })
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[ad-accounts/:id]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── GET /workspaces/:id/rules — rules for a workspace ────────────────────────
+app.get('/workspaces/:id/rules', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    if (!canAccessWorkspace(auth.profile, req.params.id))
+      return json(res, { error: 'Forbidden' }, 403)
+
+    const { data, error } = await supabase
+      .from('validation_rules')
+      .select('*')
+      .eq('workspace_id', req.params.id)
+      .order('created_at', { ascending: false })
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[rules/:id]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── GET /all-rules — all rules across workspaces (admin) ─────────────────────
+app.get('/all-rules', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    if (auth.profile.role !== 'super_admin') return json(res, { error: 'Forbidden' }, 403)
+
+    const { data, error } = await supabase
+      .from('validation_rules')
+      .select('*, workspaces(name)')
+      .order('created_at', { ascending: false })
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[all-rules]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── POST /rules — create rule ────────────────────────────────────────────────
+app.post('/rules', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    if (!canAccessWorkspace(auth.profile, req.body.workspace_id))
+      return json(res, { error: 'Forbidden' }, 403)
+
+    const payload = { ...req.body, created_by: auth.user.id, updated_by: auth.user.id }
+    const { data, error } = await supabase
+      .from('validation_rules')
+      .insert(payload)
+      .select()
+      .single()
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[create-rule]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── PATCH /rules/:id — update rule ───────────────────────────────────────────
+app.patch('/rules/:id', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+
+    // Fetch the rule to check workspace access
+    const { data: rule } = await supabase.from('validation_rules').select('workspace_id').eq('id', req.params.id).single()
+    if (!rule) return json(res, { error: 'Rule not found' }, 404)
+    if (!canAccessWorkspace(auth.profile, rule.workspace_id))
+      return json(res, { error: 'Forbidden' }, 403)
+
+    const payload = { ...req.body, updated_by: auth.user.id, updated_at: new Date().toISOString() }
+    const { data, error } = await supabase
+      .from('validation_rules')
+      .update(payload)
+      .eq('id', req.params.id)
+      .select()
+      .single()
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[update-rule]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── DELETE /rules/:id — delete rule ──────────────────────────────────────────
+app.delete('/rules/:id', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+
+    const { data: rule } = await supabase.from('validation_rules').select('workspace_id').eq('id', req.params.id).single()
+    if (!rule) return json(res, { error: 'Rule not found' }, 404)
+    if (!canAccessWorkspace(auth.profile, rule.workspace_id))
+      return json(res, { error: 'Forbidden' }, 403)
+
+    const { error } = await supabase.from('validation_rules').delete().eq('id', req.params.id)
+    if (error) throw error
+    return json(res, { success: true })
+  } catch (err) {
+    console.error('[delete-rule]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── GET /workspaces/:id/alerts — alerts for a workspace ──────────────────────
+app.get('/workspaces/:id/alerts', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    if (!canAccessWorkspace(auth.profile, req.params.id))
+      return json(res, { error: 'Forbidden' }, 403)
+
+    let query = supabase
+      .from('alert_log')
+      .select('*')
+      .eq('workspace_id', req.params.id)
+      .order('first_alerted_at', { ascending: false })
+
+    if (req.query.active_only === 'true') {
+      query = query.is('resolved_at', null)
+    }
+
+    const { data, error } = await query
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[alerts/:id]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── GET /all-alerts — all alerts across workspaces (admin) ───────────────────
+app.get('/all-alerts', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    if (auth.profile.role !== 'super_admin') return json(res, { error: 'Forbidden' }, 403)
+
+    const { data, error } = await supabase
+      .from('alert_log')
+      .select('*, workspaces(name)')
+      .order('first_alerted_at', { ascending: false })
+      .limit(200)
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[all-alerts]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── GET /workspaces/:id/entities — entity cache rows ─────────────────────────
+app.get('/workspaces/:id/entities', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    if (!canAccessWorkspace(auth.profile, req.params.id))
+      return json(res, { error: 'Forbidden' }, 403)
+
+    let query = supabase
+      .from('entity_cache')
+      .select('entity_id, entity_type, parent_id, ad_account_id, name, status, daily_budget, last_synced_at')
+      .eq('workspace_id', req.params.id)
+
+    if (req.query.entity_type) query = query.eq('entity_type', req.query.entity_type)
+
+    const { data, error } = await query
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[entities/:id]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── GET /workspaces/:id/campaigns — enriched campaign view ───────────────────
+app.get('/workspaces/:id/campaigns', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    if (!canAccessWorkspace(auth.profile, req.params.id))
+      return json(res, { error: 'Forbidden' }, 403)
+
+    const wsId = req.params.id
+    const [entitiesRes, rulesRes, violationsRes] = await Promise.all([
+      supabase
+        .from('entity_cache')
+        .select('entity_id, entity_type, parent_id, ad_account_id, name, status, daily_budget, lifetime_budget, budget_type, budget_source, campaign_budget_opt, objective, budget_change_count, last_synced_at')
+        .eq('workspace_id', wsId)
+        .in('entity_type', ['campaign', 'adset'])
+        .order('name'),
+      supabase
+        .from('validation_rules')
+        .select('id, entity_id, active, metric, operator, threshold, alert_name, snooze_until, created_at')
+        .eq('workspace_id', wsId),
+      supabase
+        .from('alert_log')
+        .select('id, entity_id')
+        .eq('workspace_id', wsId)
+        .is('resolved_at', null),
+    ])
+
+    if (entitiesRes.error) throw entitiesRes.error
+
+    const rulesByEntity = {}
+    for (const r of (rulesRes.data || [])) {
+      if (!rulesByEntity[r.entity_id]) rulesByEntity[r.entity_id] = []
+      rulesByEntity[r.entity_id].push(r)
+    }
+    const violationsByEntity = {}
+    for (const v of (violationsRes.data || [])) {
+      violationsByEntity[v.entity_id] = (violationsByEntity[v.entity_id] || 0) + 1
+    }
+
+    const result = (entitiesRes.data || []).map(e => ({
+      ...e,
+      rules:      rulesByEntity[e.entity_id]      || [],
+      violations: violationsByEntity[e.entity_id] || 0,
+    }))
+
+    return json(res, result)
+  } catch (err) {
+    console.error('[campaigns/:id]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── GET /cron-runs — cron execution history ──────────────────────────────────
+app.get('/cron-runs', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+
+    const limit = parseInt(req.query.limit) || 20
+    const { data, error } = await supabase
+      .from('cron_run_log')
+      .select('*')
+      .order('started_at', { ascending: false })
+      .limit(limit)
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[cron-runs]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── GET /audit-log — rule audit log (admin) ──────────────────────────────────
+app.get('/audit-log', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    if (auth.profile.role !== 'super_admin') return json(res, { error: 'Forbidden' }, 403)
+
+    const limit = parseInt(req.query.limit) || 300
+    const { data, error } = await supabase
+      .from('rule_audit_log')
+      .select('*, workspaces(name)')
+      .order('changed_at', { ascending: false })
+      .limit(limit)
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[audit-log]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── GET /invitations — all invitations (admin) ───────────────────────────────
+app.get('/invitations', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    if (auth.profile.role !== 'super_admin') return json(res, { error: 'Forbidden' }, 403)
+
+    const { data, error } = await supabase
+      .from('invitations')
+      .select('id, workspace_id, email, sent_at, accepted_at, revoked, workspaces(name)')
+      .order('sent_at', { ascending: false })
+      .limit(200)
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[invitations]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── GET /user-profiles — all user profiles (admin) ───────────────────────────
+app.get('/user-profiles', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    if (auth.profile.role !== 'super_admin') return json(res, { error: 'Forbidden' }, 403)
+
+    const { data, error } = await supabase
+      .from('user_profiles')
+      .select('id, role, workspace_id')
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[user-profiles]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── GET /ad-account-map — ad account ID to name mapping ──────────────────────
+app.get('/ad-account-map', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+
+    const { data, error } = await supabase
+      .from('workspace_ad_accounts')
+      .select('ad_account_id, account_name')
+    if (error) throw error
+    return json(res, data)
+  } catch (err) {
+    console.error('[ad-account-map]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
+// ── GET /admin-dashboard — aggregated dashboard data (admin) ─────────────────
+app.get('/admin-dashboard', async (req, res) => {
+  try {
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    if (auth.profile.role !== 'super_admin') return json(res, { error: 'Forbidden' }, 403)
+
+    const [ws, runs, alerts, audit, ruleCount, campaigns, allRules] = await Promise.all([
+      supabase.from('workspaces').select('*, workspace_ad_accounts(id, ad_account_id)').order('created_at', { ascending: false }).then(r => r.data || []),
+      supabase.from('cron_run_log').select('*').order('started_at', { ascending: false }).limit(5).then(r => r.data || []),
+      supabase.from('alert_log')
+        .select('id, workspace_id, entity_name, entity_id, metric, operator, threshold, actual_value, first_alerted_at, workspaces(name)')
+        .is('resolved_at', null).order('first_alerted_at', { ascending: false }).then(r => r.data || []),
+      supabase.from('rule_audit_log')
+        .select('id, workspace_id, action, changed_at, new_value, previous_value, workspaces(name)')
+        .order('changed_at', { ascending: false }).limit(8).then(r => r.data || []),
+      supabase.from('validation_rules').select('id', { count: 'exact', head: true }).eq('active', true).then(r => r.count || 0),
+      supabase.from('entity_cache')
+        .select('entity_id, entity_type, workspace_id, ad_account_id, name, objective, daily_budget, lifetime_budget, budget_type, status, last_synced_at')
+        .eq('entity_type', 'campaign').order('name').then(r => r.data || []),
+      supabase.from('validation_rules')
+        .select('id, entity_id, workspace_id, active, alert_name, metric, operator, threshold, snooze_until')
+        .then(r => r.data || []),
+    ])
+
+    return json(res, { workspaces: ws, syncRuns: runs, alerts, activity: audit, ruleCount, campaigns, allRules })
+  } catch (err) {
+    console.error('[admin-dashboard]', err)
+    return json(res, { error: err.message }, 500)
+  }
+})
+
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => res.json({ status: 'ok' }))
 

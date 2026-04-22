@@ -1,6 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { listAllAuditLog, listAllInvitations, listCronRuns, listWorkspaces } from '../../lib/api.js'
-import { supabase } from '../../lib/supabase.js'
+import { listAllAuditLog, listAllInvitations, listCronRuns, listWorkspaces, listUserProfiles } from '../../lib/api.js'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -178,8 +177,7 @@ export default function AdminActivity() {
       listAllInvitations(200),
       listCronRuns(50),
       listWorkspaces(),
-      // Fetch user profiles to resolve UUIDs to roles
-      supabase.from('user_profiles').select('id, role, workspace_id').then(r => r.data || []),
+      listUserProfiles(),
     ]).then(([audit, inv, cron, ws, profiles]) => {
       setAuditLog(audit || [])
       setInvites(inv   || [])

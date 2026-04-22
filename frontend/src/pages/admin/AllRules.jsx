@@ -1,6 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { supabase } from '../../lib/supabase.js'
-import { listWorkspaces, toggleRule, deleteRule, updateRule } from '../../lib/api.js'
+import { listWorkspaces, listAllRules, listAdAccountMap, toggleRule, deleteRule, updateRule } from '../../lib/api.js'
 
 const Icon = ({ d, size = 16 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -104,14 +103,13 @@ export default function AllRules() {
 
   async function load() {
     setLoading(true)
-    const [{ data }, ws, { data: accounts }] = await Promise.all([
-      supabase.from('validation_rules').select('*, workspaces(name)').order('created_at', { ascending: false }),
+    const [rules, ws, accounts] = await Promise.all([
+      listAllRules(),
       listWorkspaces(),
-      supabase.from('workspace_ad_accounts').select('ad_account_id, account_name'),
+      listAdAccountMap(),
     ])
-    setRules(data || [])
+    setRules(rules || [])
     setWorkspaces(ws || [])
-    // Build ad account lookup: ad_account_id → account_name
     const aaMap = {}
     for (const a of (accounts || [])) aaMap[a.ad_account_id] = a.account_name
     setAdAccountMap(aaMap)

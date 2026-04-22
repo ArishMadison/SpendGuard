@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import EntityPicker from '../../components/EntityPicker.jsx'
 import { listRules, createRule, listAdAccounts, validateEntity, updateRule, deleteRule, toggleRule } from '../../lib/api.js'
 import { useAuth } from '../../lib/AuthContext.jsx'
-import { supabase } from '../../lib/supabase.js'
 
 const Icon = ({ d, size = 16 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -167,13 +166,12 @@ export default function RulesManager({ workspaceId: propWorkspaceId } = {}) {
     }
     setSaving(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
       const threshold = form.metric === 'budget_threshold' ? `${form.budget_mode}:${form.threshold}` : form.threshold
       await createRule({
         workspace_id: wsId, ad_account_id: form.ad_account_id,
         entity_type: form.entity_type, entity_id: form.entity_id, entity_name: form.entity_name,
         metric: form.metric, operator: form.operator, threshold,
-        alert_name: form.alert_name, created_by: user.id, updated_by: user.id,
+        alert_name: form.alert_name,
       })
       setForm(defaultForm)
       setShowForm(false)

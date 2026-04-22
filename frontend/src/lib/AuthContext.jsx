@@ -11,26 +11,35 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
-      if (session?.user) fetchProfile(session.user.id)
+      if (session?.user) fetchProfile()
       else setLoading(false)
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
-      if (session?.user) fetchProfile(session.user.id)
+      if (session?.user) fetchProfile()
       else { setProfile(null); setLoading(false) }
     })
 
     return () => subscription.unsubscribe()
   }, [])
 
-  async function fetchProfile(userId) {
-    const { data } = await supabase
-      .from('user_profiles')
-      .select('role, workspace_id')
-      .eq('id', userId)
-      .single()
-    setProfile(data)
+  async function fetchProfile() {
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) { setProfile(null); setLoading(false); return }
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+      const res = await fetch(`${API_URL}/me`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      })
+      if (res.ok) {
+        setProfile(await res.json())
+      } else {
+        setProfile(null)
+      }
+    } catch {
+      setProfile(null)
+    }
     setLoading(false)
   }
 

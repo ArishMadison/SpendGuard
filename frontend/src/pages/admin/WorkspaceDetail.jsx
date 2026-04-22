@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getWorkspace, sendInvite, removeUser, fetchAdAccounts, linkAdAccount, listAlerts, listRules, updateWorkspace } from '../../lib/api.js'
-import { supabase } from '../../lib/supabase.js'
 import CampaignsView from '../workspace/CampaignsView.jsx'
 
 const Icon = ({ d, size = 16 }) => (
@@ -89,21 +88,7 @@ export default function WorkspaceDetail() {
       setNotifEmail(ws.notification_email || '')
       setRules(rl)
       setAlerts(al)
-
-      // Fetch the email of the assigned user via accepted invitation
-      if (ws.user_id) {
-        const { data: invite } = await supabase
-          .from('invitations')
-          .select('email')
-          .eq('workspace_id', wsId)
-          .not('accepted_at', 'is', null)
-          .order('accepted_at', { ascending: false })
-          .limit(1)
-          .maybeSingle()
-        setAssignedUserEmail(invite?.email || null)
-      } else {
-        setAssignedUserEmail(null)
-      }
+      setAssignedUserEmail(ws.assigned_user_email || null)
     } finally {
       setLoading(false)
     }

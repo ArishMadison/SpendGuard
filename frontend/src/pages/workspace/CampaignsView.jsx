@@ -1,7 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { listCampaignsView, listAdAccounts, createRule, updateRule, deleteRule, toggleRule, refreshEntityCache } from '../../lib/api.js'
 import { useAuth } from '../../lib/AuthContext.jsx'
-import { supabase } from '../../lib/supabase.js'
 
 const Icon = ({ d, size = 16 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -180,7 +179,6 @@ function AddRuleModal({ entity, wsId, adAccounts, onClose, onSaved }) {
     setSaveError(null)
     setSaving(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
       const threshold = isBudgetThreshold ? `${form.budget_mode}:${form.threshold}` : form.threshold
       await createRule({
         workspace_id:  wsId,
@@ -192,8 +190,6 @@ function AddRuleModal({ entity, wsId, adAccounts, onClose, onSaved }) {
         operator:      form.operator,
         threshold,
         alert_name:    form.alert_name,
-        created_by:    user.id,
-        updated_by:    user.id,
       })
       onSaved()
     } catch (err) { setSaveError(err.message) }

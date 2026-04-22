@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase.js'
+import { listAllAlerts } from '../../lib/api.js'
 
 export default function AllAlerts() {
   const [alerts,  setAlerts]  = useState([])
@@ -10,12 +10,8 @@ export default function AllAlerts() {
 
   async function load() {
     setLoading(true)
-    const { data, error } = await supabase
-      .from('alert_log')
-      .select('*, workspaces(name)')
-      .order('first_alerted_at', { ascending: false })
-      .limit(200)
-    if (!error) setAlerts(data || [])
+    try { setAlerts(await listAllAlerts()) }
+    catch { setAlerts([]) }
     setLoading(false)
   }
 

@@ -1,7 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { listWorkspaces, createWorkspace, listCronRuns } from '../../lib/api.js'
-import { supabase } from '../../lib/supabase.js'
+import { fetchAdminDashboard, createWorkspace } from '../../lib/api.js'
 
 const Icon = ({ d, size = 16 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -47,44 +46,14 @@ export default function AdminDashboard() {
   async function loadData() {
     setLoading(true)
     try {
-      const [ws, runs, al, audit, rc, camps, rules] = await Promise.all([
-        listWorkspaces(),
-        listCronRuns(5),
-        supabase
-          .from('alert_log')
-          .select('id, workspace_id, entity_name, entity_id, metric, operator, threshold, actual_value, first_alerted_at, workspaces(name)')
-          .is('resolved_at', null)
-          .order('first_alerted_at', { ascending: false })
-          .then(r => r.data || []),
-        supabase
-          .from('rule_audit_log')
-          .select('id, workspace_id, action, changed_at, new_value, previous_value, workspaces(name)')
-          .order('changed_at', { ascending: false })
-          .limit(8)
-          .then(r => r.data || []),
-        supabase
-          .from('validation_rules')
-          .select('id', { count: 'exact', head: true })
-          .eq('active', true)
-          .then(r => r.count || 0),
-        supabase
-          .from('entity_cache')
-          .select('entity_id, entity_type, workspace_id, ad_account_id, name, objective, daily_budget, lifetime_budget, budget_type, status, last_synced_at')
-          .eq('entity_type', 'campaign')
-          .order('name')
-          .then(r => r.data || []),
-        supabase
-          .from('validation_rules')
-          .select('id, entity_id, workspace_id, active, alert_name, metric, operator, threshold, snooze_until')
-          .then(r => r.data || []),
-      ])
-      setWorkspaces(ws)
-      setSyncRuns(runs)
-      setAlerts(al)
-      setActivity(audit)
-      setRuleCount(rc)
-      setCampaigns(camps)
-      setAllRules(rules)
+      const d = await fetchAdminDashboard()
+      setWorkspaces(d.workspaces)
+      setSyncRuns(d.syncRuns)
+      setAlerts(d.alerts)
+      setActivity(d.activity)
+      setRuleCount(d.ruleCount)
+      setCampaigns(d.campaigns)
+      setAllRules(d.allRules)
     } finally {
       setLoading(false)
     }
