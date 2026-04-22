@@ -1,0 +1,42 @@
+# Supabase project config
+# Fill in your project ID from https://supabase.com/dashboard/project/_/settings/general
+[project]
+# project_id = "your-project-id"
+
+[api]
+enabled = true
+port = 54321
+
+[db]
+port = 54322
+
+[studio]
+enabled = true
+port = 54323
+
+[auth]
+enabled = true
+site_url = "http://localhost:5173"
+additional_redirect_urls = ["http://localhost:5173"]
+jwt_expiry = 3600
+
+[edge_runtime]
+enabled = true
+
+[functions.send-invite]
+verify_jwt = true
+
+[functions.accept-invite]
+verify_jwt = false
+
+[functions.validate-entity]
+verify_jwt = false
+
+[functions.refresh-entity-cache]
+verify_jwt = false
+
+[functions.meta-oauth-exchange]
+verify_jwt = false
+
+[functions.link-ad-account]
+verify_jwt = true
