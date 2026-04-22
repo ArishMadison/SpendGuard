@@ -10,33 +10,37 @@
 ```
 +-------------------+       +-------------------+       +-------------------+
 |                   |       |                   |       |                   |
-|  React Frontend   | <---> |  Node.js Backend  | <---> |    Supabase       |
+|  React Frontend   | ----> |  Node.js Backend  | ----> |    Supabase       |
 |  (Vite + Tailwind)|       |  (Express + Cron) |       |  (PostgreSQL +    |
-|                   |       |                   |       |   Auth + RLS)     |
+|                   |       |                   |       |   Auth)           |
 +-------------------+       +-------------------+       +-------------------+
-        |                          |                           |
-        |                          v                           |
-        |                   +-------------+                    |
-        |                   |  Meta Ads   |                    |
-        |                   |  API v19    |                    |
-        |                   +-------------+                    |
-        |                          |                           |
-        |                          v                           |
-        |                   +-------------+                    |
-        |                   |  SendGrid   |                    |
-        |                   |  (Email)    |                    |
-        |                   +-------------+                    |
-        |                                                      |
-        +---------- Direct Supabase queries (RLS) ------------+
+        |                          |
+        |                          v
+        |                   +-------------+
+        |                   |  Meta Ads   |
+        |                   |  API v19    |
+        |                   +-------------+
+        |                          |
+        |                          v
+        |                   +-------------+
+        |                   |  SendGrid   |
+        |                   |  (Email)    |
+        |                   +-------------+
+        |
+        +---------- Supabase Auth only (login, session) ------+
 ```
+
+**All data queries flow through the backend.** The frontend never queries the
+database directly. Supabase client on the frontend is used exclusively for
+authentication (login, logout, session management, password reset).
 
 ### Service Responsibilities
 
 | Service | Role | Runtime |
 |---|---|---|
-| **Frontend** | React SPA. All user interaction. Queries Supabase directly (with RLS). Calls backend for Meta/invite/admin operations. | Vite dev server / static hosting |
-| **Backend (cron-worker)** | Express API server + embedded cron. Handles invites, ad account linking, entity sync, rule evaluation, email alerts. | Node.js on Railway |
-| **Supabase** | PostgreSQL database, Auth, Row Level Security, Edge Functions (legacy, mostly replaced by backend). | Supabase Cloud |
+| **Frontend** | React SPA. All user interaction. All data fetched via backend API. Supabase client used only for auth (login/session). | Vite dev server / static hosting |
+| **Backend (cron-worker)** | Express API server + embedded cron. Serves all data endpoints (18 routes). Handles invites, ad account linking, entity sync, rule evaluation, email alerts. Uses Supabase service_role key. | Node.js on Railway |
+| **Supabase** | PostgreSQL database, Auth. Backend connects with service_role key (bypasses RLS). Frontend uses anon key for auth only. | Supabase Cloud |
 
 ## 2. Database Schema
 
@@ -229,7 +233,10 @@ CREATE POLICY "{table}_isolation" ON {table}
   );
 ```
 
-The cron worker uses the `service_role` key which bypasses RLS entirely.
+**Note:** Since all data queries now route through the backend (which uses the
+`service_role` key, bypassing RLS), the RLS policies serve as a defense-in-depth
+layer. Authorization is enforced at the application level in each backend
+endpoint via `requireAuth()` + `canAccessWorkspace()` checks.
 
 ## 3. Backend Architecture
 
@@ -239,7 +246,7 @@ The cron worker uses the `service_role` key which bypasses RLS entirely.
 cron-worker/
   src/
     index.js              -- Registers node-cron schedule, calls runJob
-    server.js             -- Express API server (invites, linking, sync, etc.)
+    server.js             -- Express API server (all data + action endpoints)
     runJob.js             -- 8-step cron orchestration
     evaluator.js          -- Rule evaluation logic (5 metric types)
     meta/
@@ -257,17 +264,45 @@ cron-worker/
 
 ### 3.2 API Endpoints
 
+**Action endpoints:**
+
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | POST | `/send-invite` | Super admin | Generate invite token, send email |
 | POST | `/accept-invite` | Public | Verify token, create user, link workspace |
 | POST | `/remove-user` | Super admin | Delete auth user, clear workspace.user_id |
-| POST | `/link-ad-account` | Super admin | Link Meta ad account to workspace (with cross-workspace uniqueness check) |
+| POST | `/link-ad-account` | Super admin | Link Meta ad account (cross-workspace uniqueness enforced) |
 | POST | `/refresh-entity-cache` | Authenticated | Trigger cache refresh for one ad account |
 | POST | `/run-job` | Super admin | Manually trigger cron evaluation job |
 | GET | `/ad-accounts` | Super admin | Fetch all accessible Meta ad accounts |
 | GET | `/validate-entity` | Authenticated | Check entity_id exists in cache |
 | GET | `/health` | Public | Health check |
+
+**Data endpoints (all frontend queries route through these):**
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/me` | Authenticated | Current user profile (role + workspace_id) |
+| GET | `/workspaces` | Authenticated | List workspaces (admin: all, user: own) |
+| GET | `/workspaces/:id` | Workspace access | Single workspace with ad accounts + assigned user email |
+| POST | `/workspaces` | Super admin | Create workspace |
+| PATCH | `/workspaces/:id` | Super admin | Update workspace |
+| GET | `/workspaces/:id/ad-accounts` | Workspace access | Ad accounts for workspace |
+| GET | `/workspaces/:id/rules` | Workspace access | Rules for workspace |
+| GET | `/workspaces/:id/alerts` | Workspace access | Alerts for workspace (?active_only=true) |
+| GET | `/workspaces/:id/campaigns` | Workspace access | Enriched campaign view (entities + rules + violations) |
+| GET | `/workspaces/:id/entities` | Workspace access | Entity cache rows (?entity_type=campaign) |
+| POST | `/rules` | Workspace access | Create rule (backend sets created_by from JWT) |
+| PATCH | `/rules/:id` | Workspace access | Update rule (backend sets updated_by from JWT) |
+| DELETE | `/rules/:id` | Workspace access | Delete rule |
+| GET | `/all-rules` | Super admin | All rules across workspaces |
+| GET | `/all-alerts` | Super admin | All alerts across workspaces |
+| GET | `/cron-runs` | Authenticated | Cron execution history (?limit=N) |
+| GET | `/audit-log` | Super admin | Rule audit log (?limit=N) |
+| GET | `/invitations` | Super admin | All invitation records |
+| GET | `/user-profiles` | Super admin | All user profiles |
+| GET | `/ad-account-map` | Authenticated | Ad account ID to name mapping |
+| GET | `/admin-dashboard` | Super admin | Aggregated dashboard data (single call) |
 
 ### 3.3 Cron Job Flow
 
@@ -397,12 +432,26 @@ frontend/src/
       AlertSettings.jsx         -- Notification email + account info
 ```
 
-### 4.2 Auth Flow
+### 4.2 Data Flow
+
+All frontend data queries use `apiCall()` which:
+1. Gets the Supabase session JWT from `supabase.auth.getSession()`
+2. Sends it as `Authorization: Bearer <token>` to the backend
+3. Backend verifies JWT via `supabase.auth.getUser(token)`
+4. Backend checks role + workspace access
+5. Backend queries Supabase with service_role key
+6. Returns data to frontend
+
+No `supabase.from()` calls exist in the frontend. The Supabase JS client is
+used exclusively for: `signInWithPassword`, `signOut`, `getSession`,
+`onAuthStateChange`, `resetPasswordForEmail`.
+
+### 4.3 Auth Flow
 
 ```
 Login:
   1. supabase.auth.signInWithPassword(email, password)
-  2. Fetch user_profiles for role + workspace_id
+  2. AuthContext calls GET /me to fetch role + workspace_id
   3. Redirect: super_admin -> /admin, workspace_user -> /workspace
 
 Invite:
@@ -420,7 +469,7 @@ Route Protection:
   - Wraps children in AppShell (sidebar layout)
 ```
 
-### 4.3 Data Caching
+### 4.4 Data Caching
 
 | Data | Cache | TTL | Invalidation |
 |---|---|---|---|

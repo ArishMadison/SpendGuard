@@ -274,25 +274,271 @@ Health check endpoint.
 
 ---
 
-## Frontend Supabase Queries
+## Data Endpoints
 
-The frontend queries Supabase directly (protected by RLS). Key functions in
-`frontend/src/lib/api.js`:
+All frontend data queries route through the backend. The frontend never queries
+the database directly. Each endpoint verifies the JWT, checks role, and
+enforces workspace access.
 
-| Function | Table | Description |
+### GET /me
+
+Returns the authenticated user's profile.
+
+**Auth:** Authenticated
+
+**Response (200):**
+```json
+{ "role": "super_admin", "workspace_id": null }
+```
+
+---
+
+### GET /workspaces
+
+List workspaces. Super admin sees all; workspace user sees only their own.
+
+**Auth:** Authenticated
+
+**Response (200):** Array of workspace objects with `workspace_ad_accounts`.
+
+---
+
+### GET /workspaces/:id
+
+Single workspace with ad accounts and assigned user email.
+
+**Auth:** Workspace access (owner or super admin)
+
+**Response (200):** Workspace object. `access_token` is stripped from ad accounts.
+Includes `assigned_user_email` if a user is linked.
+
+---
+
+### POST /workspaces
+
+Create a new workspace.
+
+**Auth:** Super admin
+
+**Request body:**
+```json
+{ "name": "Client Name" }
+```
+
+---
+
+### PATCH /workspaces/:id
+
+Update workspace fields.
+
+**Auth:** Super admin
+
+**Request body:** Any workspace fields to update.
+
+---
+
+### GET /workspaces/:id/ad-accounts
+
+List ad accounts for a workspace (access_token excluded).
+
+**Auth:** Workspace access
+
+---
+
+### GET /workspaces/:id/rules
+
+List all rules for a workspace.
+
+**Auth:** Workspace access
+
+---
+
+### GET /workspaces/:id/alerts
+
+List alerts for a workspace.
+
+**Auth:** Workspace access
+
+**Query params:**
+- `active_only=true` (optional): Only return unresolved alerts
+
+---
+
+### GET /workspaces/:id/campaigns
+
+Enriched campaign view: entities + rules + active violations per entity.
+
+**Auth:** Workspace access
+
+**Response (200):** Array of entity objects, each with `rules` (array) and
+`violations` (count).
+
+---
+
+### GET /workspaces/:id/entities
+
+Entity cache rows for a workspace.
+
+**Auth:** Workspace access
+
+**Query params:**
+- `entity_type` (optional): Filter by `campaign`, `adset`, or `ad`
+
+---
+
+### POST /rules
+
+Create a new validation rule. Backend sets `created_by` and `updated_by` from
+the JWT — frontend does not need to pass these fields.
+
+**Auth:** Workspace access (checked against `workspace_id` in body)
+
+**Request body:**
+```json
+{
+  "workspace_id": 2,
+  "ad_account_id": "act_882341345153629",
+  "entity_type": "campaign",
+  "entity_id": "120207117933690269",
+  "entity_name": "Brand Campaign Q4",
+  "metric": "budget_threshold",
+  "operator": ">",
+  "threshold": "daily:5000",
+  "alert_name": "Low daily budget"
+}
+```
+
+---
+
+### PATCH /rules/:id
+
+Update a rule. Backend verifies workspace access via the rule's workspace_id.
+
+**Auth:** Workspace access
+
+**Request body:** Any rule fields to update.
+
+---
+
+### DELETE /rules/:id
+
+Delete a rule.
+
+**Auth:** Workspace access
+
+---
+
+### GET /all-rules
+
+All rules across all workspaces (with workspace name join).
+
+**Auth:** Super admin
+
+---
+
+### GET /all-alerts
+
+All alerts across all workspaces (limit 200).
+
+**Auth:** Super admin
+
+---
+
+### GET /cron-runs
+
+Cron execution history.
+
+**Auth:** Authenticated
+
+**Query params:**
+- `limit` (optional, default 20)
+
+---
+
+### GET /audit-log
+
+Rule audit log entries across all workspaces.
+
+**Auth:** Super admin
+
+**Query params:**
+- `limit` (optional, default 300)
+
+---
+
+### GET /invitations
+
+All invitation records.
+
+**Auth:** Super admin
+
+---
+
+### GET /user-profiles
+
+All user profiles (id, role, workspace_id).
+
+**Auth:** Super admin
+
+---
+
+### GET /ad-account-map
+
+Ad account ID to name mapping for display purposes.
+
+**Auth:** Authenticated
+
+---
+
+### GET /admin-dashboard
+
+Aggregated data for the admin overview page in a single request. Returns
+workspaces, sync runs, active alerts, recent activity, rule count, campaigns,
+and all rules.
+
+**Auth:** Super admin
+
+**Response (200):**
+```json
+{
+  "workspaces": [...],
+  "syncRuns": [...],
+  "alerts": [...],
+  "activity": [...],
+  "ruleCount": 12,
+  "campaigns": [...],
+  "allRules": [...]
+}
+```
+
+---
+
+## Frontend API Functions
+
+All functions in `frontend/src/lib/api.js` use `apiCall()` which sends
+requests to the backend with the Supabase JWT as authorization:
+
+| Function | Backend Endpoint | Description |
 |---|---|---|
-| `listWorkspaces()` | workspaces | All workspaces with ad accounts and user profiles |
-| `getWorkspace(id)` | workspaces | Single workspace with ad accounts |
-| `createWorkspace(payload)` | workspaces | Insert new workspace |
-| `updateWorkspace(id, payload)` | workspaces | Update workspace fields |
-| `listAdAccounts(wsId)` | workspace_ad_accounts | Ad accounts for a workspace (no token) |
-| `listRules(wsId)` | validation_rules | All rules for a workspace |
-| `createRule(payload)` | validation_rules | Insert new rule |
-| `updateRule(id, payload)` | validation_rules | Update rule fields |
-| `deleteRule(id)` | validation_rules | Delete a rule |
-| `toggleRule(id, active)` | validation_rules | Toggle rule active state |
-| `listAlerts(wsId, opts)` | alert_log | Alerts for a workspace (optional activeOnly filter) |
-| `listCampaignsView(wsId)` | entity_cache + validation_rules + alert_log | Enriched campaign tree with rules and violations |
-| `listCronRuns(limit)` | cron_run_log | Recent cron executions |
-| `listAllAuditLog(limit)` | rule_audit_log | All audit entries across workspaces |
-| `listAllInvitations(limit)` | invitations | All invitation records |
+| `fetchMyProfile()` | GET /me | Current user role + workspace |
+| `listWorkspaces()` | GET /workspaces | All workspaces |
+| `getWorkspace(id)` | GET /workspaces/:id | Single workspace |
+| `createWorkspace(payload)` | POST /workspaces | Create workspace |
+| `updateWorkspace(id, payload)` | PATCH /workspaces/:id | Update workspace |
+| `listAdAccounts(wsId)` | GET /workspaces/:id/ad-accounts | Workspace ad accounts |
+| `listRules(wsId)` | GET /workspaces/:id/rules | Workspace rules |
+| `listAllRules()` | GET /all-rules | All rules (admin) |
+| `createRule(payload)` | POST /rules | Create rule |
+| `updateRule(id, payload)` | PATCH /rules/:id | Update rule |
+| `deleteRule(id)` | DELETE /rules/:id | Delete rule |
+| `toggleRule(id, active)` | PATCH /rules/:id | Toggle active |
+| `listAlerts(wsId, opts)` | GET /workspaces/:id/alerts | Workspace alerts |
+| `listAllAlerts()` | GET /all-alerts | All alerts (admin) |
+| `listCampaignsView(wsId)` | GET /workspaces/:id/campaigns | Enriched campaigns |
+| `listEntities(wsId, type)` | GET /workspaces/:id/entities | Entity cache |
+| `listCronRuns(limit)` | GET /cron-runs | Cron history |
+| `listAllAuditLog(limit)` | GET /audit-log | Audit entries (admin) |
+| `listAllInvitations(limit)` | GET /invitations | Invitations (admin) |
+| `listUserProfiles()` | GET /user-profiles | User profiles (admin) |
+| `listAdAccountMap()` | GET /ad-account-map | Account name lookup |
+| `fetchAdminDashboard()` | GET /admin-dashboard | Aggregated admin data |
